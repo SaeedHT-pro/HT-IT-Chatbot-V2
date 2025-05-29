@@ -1,0 +1,14 @@
+streamlit
+google-generativeai
+sentence-transformers
+langchain
+langchain_community
+langchain-google-genai # Though we might use google-generativeai directly for Gemini
+faiss-cpu # or faiss-gpu if you have a compatible GPU and CUDA setup
+pandas
+openpyxl # For reading .xlsx files with pandas
+pypdf # For PDF loading
+python-docx # For .docx loading via Unstructured (dependency)
+unstructured # For .docx and other document types
+duckduckgo-search
+python-dotenv
