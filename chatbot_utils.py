@@ -36,7 +36,10 @@ INITIAL_ANALYSIS_PROMPT_TEMPLATE = """
 User Query: "{user_query}"
 
 Analyze the user query for an IT support chatbot. Determine the most appropriate primary knowledge source and extract key entities.
-Possible knowledge sources are: "FAQ_Store" (for common, direct questions), "SOP_Store" (for detailed procedures, troubleshooting specific product issues), or "Web_Search" (for very general queries or if other sources fail).
+Possible knowledge sources are:
+- "FAQ_Store": For common, direct "how-to" questions, general IT concepts, or frequently asked questions that don't involve deep troubleshooting of specific hardware/software models.
+- "SOP_Store": For detailed procedures, troubleshooting specific hardware/software product issues, or information typically found in user manuals, standard operating procedures, or internal guides.
+- "Web_Search": For very general queries, current events, or if the query is clearly outside the scope of typical IT support or internal documentation.
 
 Also, provide a concise version of the query suitable for semantic search.
 
@@ -63,6 +66,14 @@ JSON Output:
 }}
 
 Example 3:
+User Query: "How to import sharepoint to new account?"
+JSON Output:
+{{
+  "best_source": "FAQ_Store",
+  "simplified_query_for_search": "import sharepoint to new account"
+}}
+
+Example 4:
 User Query: "What's the weather like today?"
 JSON Output:
 {{
@@ -76,7 +87,11 @@ Now, analyze the User Query at the top of this prompt.
 RESPONSE_GENERATION_PROMPT_TEMPLATE = """
 You are a helpful IT support assistant.
 Answer the user's query: "{user_query}"
-Based *only* on the following provided context. If the context is insufficient or doesn't directly answer, politely state that you couldn't find specific information for that query.
+Based *only* on the following provided context.
+
+If the context directly answers the query, provide a concise and helpful answer.
+If the context contains relevant information but doesn't directly answer the query or find a specific section mentioned (e.g., "Notice for built-in rechargeable battery"), synthesize the available relevant information to best address the user's need.
+If the context is insufficient or doesn't contain any relevant information, politely state that you couldn't find specific information for that query.
 Do not make up information. If the context is from a web search, you can optionally mention that.
 
 Context from {source_type_used}:
@@ -91,12 +106,12 @@ def load_faqs(file_path="data/faqs/faq_data.xlsx"):
     docs = []
     try:
         df = pd.read_excel(file_path)
-        if 'question' not in df.columns or 'answer' not in df.columns:
+        if 'Question' not in df.columns or 'Answer' not in df.columns:
             print("FAQ Excel must contain 'question' and 'answer' columns.")
             return []
 
         for _, row in df.iterrows():
-            content = f"Question: {row['question']}\nAnswer: {row['answer']}"
+            content = f"Question: {row['Question']}\nAnswer: {row['Answer']}"
             ref_link = row.get('ref link') # Optional column
             metadata = {"source": "faq"}
             if pd.notna(ref_link) and ref_link:
@@ -181,7 +196,7 @@ def get_faq_retriever(embedding_model, force_recreate=False, k_results=2):
         return vector_store.as_retriever(search_kwargs={"k": k_results})
     return None
 
-def get_sop_retriever(embedding_model, force_recreate=False, k_results=3):
+def get_sop_retriever(embedding_model, force_recreate=False, k_results=5):
     """Gets a FAISS retriever for SOPs."""
     vector_store = create_or_load_faiss_index("faiss_sop_index", load_sops, embedding_model, force_recreate)
     if vector_store:
