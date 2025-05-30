@@ -12,3 +12,5 @@ python-docx # For .docx loading via Unstructured (dependency)
 unstructured # For .docx and other document types
 duckduckgo-search
 python-dotenv
+requests
+beautifulsoup4

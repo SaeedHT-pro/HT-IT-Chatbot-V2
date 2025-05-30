@@ -7,10 +7,13 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.tools import DuckDuckGoSearchRun
+# from langchain_community.tools import DuckDuckGoSearchRun # Will be replaced
+from duckduckgo_search import DDGS # Import for direct use
 from langchain.docstore.document import Document
 import json
 import logging
+import requests
+from bs4 import BeautifulSoup
 
 # --- LOGGER SETUP ---
 LOG_DIR = "logs"
@@ -74,15 +77,31 @@ def get_embedding_model(model_name='all-MiniLM-L6-v2'):
     return HuggingFaceEmbeddings(model_name=model_name)
 
 # --- PROMPT TEMPLATES ---
+RELEVANCE_CHECK_PROMPT_TEMPLATE = """
+Original User Query: "{user_query}"
+Simplified Search Query Used: "{simplified_query}"
+
+Retrieved Context Snippet(s) from Internal Documents:
+---
+{retrieved_context}
+---
+Based on the "Retrieved Context Snippet(s)", is it highly likely to contain a direct and useful answer to the "Original User Query"?
+The context is only relevant if it directly addresses the main subject of the user's query.
+Consider if the context is specific enough to be helpful or just vaguely related.
+Answer strictly with only "YES" or "NO".
+"""
+
+# --- PROMPT TEMPLATES (Ensure INITIAL_ANALYSIS_PROMPT_TEMPLATE is clear about Internal_Docs vs Web_Search) ---
 INITIAL_ANALYSIS_PROMPT_TEMPLATE = """
 User Query: "{user_query}"
 
-Analyze the user query for an IT support chatbot. Determine the most appropriate primary knowledge source and extract key entities.
-Possible knowledge sources are:
-- "Internal_Docs": For questions related to IT procedures, troubleshooting specific hardware/software, how-to guides, company policies, FAQs, or any information typically found in internal documentation, user manuals, SOPs, or knowledge bases.
-- "Web_Search": For very general queries, current events, or if the query is clearly outside the scope of typical IT support or internal documentation.
+Analyze the user query for an IT support chatbot. Your primary goal is to determine if the query can likely be answered by our internal documentation (FAQs, SOPs, manuals) or if it requires a general web search.
 
-Also, provide a concise version of the query suitable for semantic search. Focus on key entities and concepts that would help retrieve relevant document sections, even if the exact phrasing isn't present.
+Consider the following:
+- If the query asks for specific internal procedures, troubleshooting for company-supported hardware/software, "how-to" for internal tools, or seems like a common IT question that would be documented internally, choose "Internal_Docs".
+- If the query is very general, about consumer products not typically managed by corporate IT, news, current events, or clearly outside the scope of internal IT documentation, choose "Web_Search".
+
+Also, provide a concise version of the query suitable for semantic search against our internal documents.
 
 Output your decision strictly in JSON format like this (do not add any other text before or after the JSON block):
 {{
@@ -90,44 +109,28 @@ Output your decision strictly in JSON format like this (do not add any other tex
   "simplified_query_for_search": "concise version of the query"
 }}
 
-Example 1:
-User Query: "How do I reset my Windows password?"
+Example 1 (Internal):
+User Query: "How do I reset my Windows password on my work laptop?"
 JSON Output:
 {{
   "best_source": "Internal_Docs",
-  "simplified_query_for_search": "reset windows password"
+  "simplified_query_for_search": "reset windows work laptop password"
 }}
 
-Example 2:
-User Query: "My Dell laptop screen is flickering and showing strange artifacts after the recent update. I've already tried restarting."
+Example 2 (Internal - Specific SOP type):
+User Query: "My Dell Latitude 7400 is not connecting to the VPN after the new software update."
 JSON Output:
 {{
   "best_source": "Internal_Docs",
-  "simplified_query_for_search": "Dell laptop screen flickering after update"
+  "simplified_query_for_search": "Dell Latitude 7400 VPN connection issue after software update"
 }}
 
-Example 3:
-User Query: "How to import sharepoint to new account?"
-JSON Output:
-{{
-  "best_source": "Internal_Docs",
-  "simplified_query_for_search": "import sharepoint to new account"
-}}
-
-Example 4:
-User Query: "What's the weather like today?"
+Example 3 (Web - Too general or consumer):
+User Query: "What's the best free antivirus software for a home PC?"
 JSON Output:
 {{
   "best_source": "Web_Search",
-  "simplified_query_for_search": "current weather"
-}}
-
-Example 5:
-User Query: "Notice for built-in rechargeable battery"
-JSON Output:
-{{
-  "best_source": "Internal_Docs",
-  "simplified_query_for_search": "rechargeable battery information notice"
+  "simplified_query_for_search": "best free antivirus home pc"
 }}
 
 Now, analyze the User Query at the top of this prompt.
@@ -146,6 +149,7 @@ Based *only* on the following provided context.
     *   **Emphasis:** Use bold (`**text**`) or italics (`*text*`) for emphasis where it aids understanding.
     *   **Code Blocks:** If providing code snippets or commands, use Markdown code blocks (e.g., ```python\ncode\n``` or `inline code`).
     *   **Headings:** For longer, structured answers, consider using Markdown headings (`## Heading`) if it improves organization, but use sparingly.
+    *   **Link Previews (IMPORTANT!):** If you include an external URL that the user would benefit from visiting (e.g., a support article, documentation), YOU MUST format it for a preview like this: `[PREVIEW](https://example.com/some-article)`. The system will then attempt to fetch the page title to make the link more informative. For example, if you want to link to `https://support.example.com/article/123`, write it as `[PREVIEW](https://support.example.com/article/123)`. For any other links where a title preview is not necessary or for internal references, use standard Markdown: `[Visible Text](https://example.com)`.
 4.  **Relevance:** If the context contains information relevant to the user's query, synthesize it into a helpful answer.
 5.  **Address Specificity (If Applicable):**
     *   If the user asks for a *specific section, notice, or type of document* (e.g., "Liquid crystal display (LCD) notice", "Notice for built-in rechargeable battery") and the context *does not explicitly contain that exact section title or document type*, clearly state that the specific "notice" or "section" was not found.
@@ -154,8 +158,9 @@ Based *only* on the following provided context.
 7.  **No Fabrication:** Do not make up information.
 8.  **Source Attribution (Subtle):**
     *   Do NOT explicitly state "This information is from FAQ file X" or "According to SOP Y."
-    *   If the context is from a web search, you can subtly indicate this if it adds value (e.g., "According to some online sources..." or "A web search suggests...").
-    *   For internal documents, integrate the information seamlessly. If different pieces of context point to slightly different aspects of a solution (e.g., one for general backup, another for Outlook-specific backup), try to weave them together coherently. If a reference link is available in the metadata and highly relevant, you *may* include it if it seems genuinely helpful for the user to explore further, but don't do this routinely.
+    *   **Citing Web Sources**: If `Context (Source: ...)` indicates "Web Search" and your answer directly uses information from a specific article or support page URL found within that web search context, you **MUST** cite that URL. Use the `[PREVIEW](URL_HERE)` format for this citation. For example: "According to [PREVIEW](https://source.example.com/article-name), the steps are..." or "You can find more details at [PREVIEW](https://another.example.com/support-page)."
+    *   For internal documents, integrate the information seamlessly.
+    *   Remember to use `[PREVIEW](URL_HERE)` for any other external helpful links as described in instruction 3, even if not explicitly citing a web search source.
 
 Context (Source: {source_type_used}):
 "{context}"
@@ -305,16 +310,38 @@ def get_combined_retriever(embedding_model, force_recreate=False, k_results=5):
     return None
 
 # --- SEARCH TOOL ---
-def perform_duckduckgo_search(query_text):
-    logger.info(f"Performing DuckDuckGo search for: '{query_text}'")
-    search = DuckDuckGoSearchRun()
+def perform_duckduckgo_search(query_text: str, max_results: int = 3) -> str:
+    """
+    Performs a DuckDuckGo search and returns a formatted string of results
+    including titles, URLs, and snippets.
+    """
+    logger.info(f"Performing DuckDuckGo search for: '{query_text}' with max_results={max_results}")
     try:
-        results = search.run(query_text)
-        if not results or "No good DuckDuckGo Search Result was found" in results:
-            logger.warning(f"DuckDuckGo search for '{query_text}' yielded no specific results.")
+        with DDGS() as ddgs:
+            search_results = list(ddgs.text(query_text, max_results=max_results))
+
+        if not search_results:
+            logger.warning(f"DuckDuckGo search for '{query_text}' yielded no results.")
             return "Web search did not yield specific results for this query."
-        logger.info(f"DuckDuckGo search for '{query_text}' successful.")
-        return results
+
+        formatted_results = "Web Search Results:\n\n"
+        for i, result in enumerate(search_results):
+            title = result.get('title', 'N/A')
+            url = result.get('href', 'N/A')
+            snippet = result.get('body', 'N/A')
+            
+            formatted_results += f"Result {i+1}:\n"
+            formatted_results += f"Title: {title}\n"
+            formatted_results += f"URL: {url}\n"
+            formatted_results += f"Snippet: {snippet}\n---\n"
+            
+            # Log individual result details for clarity
+            logger.debug(f"Search Result {i+1} for '{query_text}': Title='{title}', URL='{url}', Snippet='{snippet[:100]}...'")
+
+
+        logger.info(f"DuckDuckGo search for '{query_text}' successful, found {len(search_results)} results.")
+        return formatted_results.strip()
+
     except Exception as e:
         logger.error(f"DuckDuckGo search error for '{query_text}': {e}", exc_info=True)
         return "Web search failed or encountered an error."
@@ -323,6 +350,12 @@ def perform_duckduckgo_search(query_text):
 def clean_json_response(llm_response_text):
     logger.debug(f"Attempting to clean JSON from LLM response: '{llm_response_text[:200]}...'")
     try:
+        # Handle potential markdown code block ```json ... ```
+        if llm_response_text.strip().startswith("```json"):
+            llm_response_text = llm_response_text.split("```json", 1)[1].rsplit("```", 1)[0]
+        elif llm_response_text.strip().startswith("```"):
+             llm_response_text = llm_response_text.split("```", 1)[1].rsplit("```", 1)[0]
+
         json_start = llm_response_text.index("{")
         json_end = llm_response_text.rindex("}") + 1
         json_str = llm_response_text[json_start:json_end]
@@ -332,3 +365,49 @@ def clean_json_response(llm_response_text):
     except (ValueError, json.JSONDecodeError) as e:
         logger.error(f"Error parsing JSON from LLM response: {e}\nRaw response: {llm_response_text}", exc_info=True)
         return None
+
+# --- URL TITLE FETCHER ---
+def fetch_url_title(url: str) -> str:
+    """
+    Fetches the title of a given URL.
+    Returns the title string or a default message if fetching fails or title is not found.
+    """
+    logger.info(f"Attempting to fetch title for URL: {url}")
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=5, allow_redirects=True)
+        response.raise_for_status()  # Raise an exception for HTTP errors
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        # Try to get title tag
+        title_tag = soup.find('title')
+        if title_tag and title_tag.string:
+            title = title_tag.string.strip()
+            logger.info(f"Found title for {url}: '{title}'")
+            return title
+
+        # Fallback: Try to get the first <h1> tag
+        h1_tag = soup.find('h1')
+        if h1_tag and h1_tag.string:
+            title = h1_tag.string.strip()
+            logger.info(f"Found h1 for {url} as fallback title: '{title}'")
+            return title
+        
+        # Fallback: Try to get OpenGraph title
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content"):
+            title = og_title["content"].strip()
+            logger.info(f"Found OpenGraph title for {url}: '{title}'")
+            return title
+
+        logger.warning(f"No <title>, <h1>, or og:title found for URL: {url}")
+        return url # Return the URL itself if no title found
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching URL {url}: {e}", exc_info=True)
+        return url # Return URL on error
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while fetching title for {url}: {e}", exc_info=True)
+        return url # Return URL on unexpected error
