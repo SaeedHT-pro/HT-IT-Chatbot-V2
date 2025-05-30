@@ -56,8 +56,7 @@ def process_response_for_link_previews(text: str) -> str:
 
 # --- PAGE CONFIG --- (no change)
 st.set_page_config(page_title="IT Support Chatbot", layout="wide")
-st.title("IT Support Chatbot Assistant 🤖")
-st.caption("Powered by Gemini, FAISS, LangChain & Streamlit")
+st.title("IT Support Chatbot Assistant ")
 
 # --- INITIALIZATION & CACHING --- (no change)
 @st.cache_resource
