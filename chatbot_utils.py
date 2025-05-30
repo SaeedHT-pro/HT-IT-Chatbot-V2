@@ -98,6 +98,7 @@ User Query: "{user_query}"
 Analyze the user query for an IT support chatbot. Your primary goal is to determine if the query can likely be answered by our internal documentation (FAQs, SOPs, manuals) or if it requires a general web search.
 
 Consider the following:
+- If the query contain random typos like "adbajfb","kdnaiof", "asdasd", or similar gibberish, it is likely not a valid query and should given response as it should given by chatbot.
 - If the query asks for specific internal procedures, troubleshooting for company-supported hardware/software, "how-to" for internal tools, or seems like a common IT question that would be documented internally, choose "Internal_Docs".
 - If the query is very general, about consumer products not typically managed by corporate IT, news, current events, or clearly outside the scope of internal IT documentation, choose "Web_Search".
 
