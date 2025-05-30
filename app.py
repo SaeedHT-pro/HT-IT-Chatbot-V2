@@ -2,8 +2,7 @@ import streamlit as st
 from chatbot_utils import (
     get_gemini_llm,
     get_embedding_model,
-    get_faq_retriever,
-    get_sop_retriever,
+    get_combined_retriever, # Corrected import
     perform_duckduckgo_search,
     INITIAL_ANALYSIS_PROMPT_TEMPLATE,
     RESPONSE_GENERATION_PROMPT_TEMPLATE,
@@ -28,12 +27,11 @@ def load_models_and_retrievers():
     # force_recreate_indexes = st.sidebar.checkbox("Recreate Vector Indexes", False) 
     force_recreate_indexes = False # Default to False
 
-    faq_retriever = get_faq_retriever(embedding_model, force_recreate=force_recreate_indexes)
-    sop_retriever = get_sop_retriever(embedding_model, force_recreate=force_recreate_indexes)
+    combined_retriever = get_combined_retriever(embedding_model, force_recreate=force_recreate_indexes) # Corrected
     logger.info("Models and retrievers loading complete for Streamlit session.")
-    return llm, faq_retriever, sop_retriever
+    return llm, combined_retriever # Corrected
 
-llm, faq_retriever, sop_retriever = load_models_and_retrievers()
+llm, combined_retriever = load_models_and_retrievers() # Corrected
 
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": "Hi! I'm your IT Support Assistant. How can I help you today?"}]
@@ -62,7 +60,7 @@ if user_query := st.chat_input("Ask your IT question..."):
 
         # 1. Initial Analysis with LLM
         analysis_prompt_filled = INITIAL_ANALYSIS_PROMPT_TEMPLATE.format(user_query=user_query)
-        best_source = "SOP_Store" # Default
+        best_source = "Internal_Docs" # Default changed
         simplified_query = user_query # Default
 
         try:
@@ -73,16 +71,17 @@ if user_query := st.chat_input("Ask your IT question..."):
             logger.info(f"Parsed LLM Analysis JSON: {analysis_result_json}")
 
             if analysis_result_json:
-                best_source = analysis_result_json.get("best_source", "SOP_Store")
+                best_source = analysis_result_json.get("best_source", "Internal_Docs") # Default changed
                 simplified_query = analysis_result_json.get("simplified_query_for_search", user_query)
-                assistant_reasoning_steps_for_ui += f"*(Decided to check: {best_source.replace('_', ' ')} first using query: '{simplified_query}')*\n\n"
+                ui_source_display = "Internal Documents" if best_source == "Internal_Docs" else best_source.replace('_', ' ')
+                assistant_reasoning_steps_for_ui += f"*(Decided to check: {ui_source_display} first using query: '{simplified_query}')*\n\n"
             else:
-                assistant_reasoning_steps_for_ui += "*(Could not reliably parse LLM analysis. Defaulting to SOPs with original query.)*\n\n"
+                assistant_reasoning_steps_for_ui += "*(Could not reliably parse LLM analysis. Defaulting to Internal Documents with original query.)*\n\n" # Changed
                 logger.warning("LLM analysis JSON parsing failed.")
         except Exception as e:
             st.error(f"Error during LLM initial analysis: {e}") # Show error in UI
             logger.error(f"Error in LLM initial analysis: {e}", exc_info=True)
-            assistant_reasoning_steps_for_ui += f"*(Error during analysis phase: {e}. Defaulting to SOPs.)*\n\n"
+            assistant_reasoning_steps_for_ui += f"*(Error during analysis phase: {e}. Defaulting to Internal Documents.)*\n\n" # Changed
         
         logger.info(f"After Analysis - best_source: {best_source}, simplified_query: '{simplified_query}'")
         response_placeholder.markdown(thinking_message_ui + "\n" + assistant_reasoning_steps_for_ui)
@@ -92,70 +91,48 @@ if user_query := st.chat_input("Ask your IT question..."):
         source_type_used_for_response_prompt = "" # For the final LLM prompt
         docs_found = False
 
-        # Attempt 1: FAQ Store
-        if best_source == "FAQ_Store":
-            source_type_used_for_response_prompt = "FAQs"
+        # Attempt 1: Internal Documents (Combined FAQs and SOPs)
+        if best_source == "Internal_Docs":
+            source_type_used_for_response_prompt = "Internal Documents"
             assistant_reasoning_steps_for_ui += f"Attempting to retrieve from {source_type_used_for_response_prompt}...\n"
             response_placeholder.markdown(thinking_message_ui + "\n" + assistant_reasoning_steps_for_ui)
-            if faq_retriever:
+            if combined_retriever:
                 try:
-                    logger.debug(f"Querying FAQ retriever with: '{simplified_query}'")
-                    relevant_docs = faq_retriever.get_relevant_documents(simplified_query)
-                    logger.info(f"FAQ Retriever found {len(relevant_docs)} docs for '{simplified_query}'.")
+                    logger.debug(f"Querying Combined retriever with: '{simplified_query}'")
+                    relevant_docs = combined_retriever.get_relevant_documents(simplified_query)
+                    logger.info(f"Combined Retriever found {len(relevant_docs)} docs for '{simplified_query}'.")
                     if relevant_docs:
-                        retrieved_context_str = "\n\n---\n\n".join([doc.page_content for doc in relevant_docs])
+                        # Include metadata like source and doc_type in the context string for better LLM understanding
+                        context_parts = []
+                        for doc in relevant_docs:
+                            doc_info = f"Source: {doc.metadata.get('source', 'N/A')}, Type: {doc.metadata.get('doc_type', 'N/A')}"
+                            context_parts.append(f"{doc_info}\nContent: {doc.page_content}")
+                        retrieved_context_str = "\n\n---\n\n".join(context_parts)
                         docs_found = True
                         assistant_reasoning_steps_for_ui += f"Found relevant info in {source_type_used_for_response_prompt}.\n"
                     else:
                         assistant_reasoning_steps_for_ui += f"No specific match found in {source_type_used_for_response_prompt}.\n"
                 except Exception as e:
-                    st.warning(f"Error retrieving from FAQs: {e}") # UI warning
-                    logger.warning(f"Error retrieving from FAQs: {e}", exc_info=True)
+                    st.warning(f"Error retrieving from {source_type_used_for_response_prompt}: {e}") # UI warning
+                    logger.warning(f"Error retrieving from {source_type_used_for_response_prompt}: {e}", exc_info=True)
                     assistant_reasoning_steps_for_ui += f"Error accessing {source_type_used_for_response_prompt}: {e}\n"
             else:
-                assistant_reasoning_steps_for_ui += "FAQ retriever not available.\n"
-                logger.warning("FAQ retriever was None during search attempt.")
+                assistant_reasoning_steps_for_ui += f"{source_type_used_for_response_prompt} retriever not available.\n"
+                logger.warning("Combined retriever was None during search attempt.")
         
         response_placeholder.markdown(thinking_message_ui + "\n" + assistant_reasoning_steps_for_ui)
 
-        # Attempt 2: SOP Store (if chosen, or if FAQ failed/wasn't primary)
-        if not docs_found and (best_source == "SOP_Store" or (best_source == "FAQ_Store" and not docs_found)):
-            if source_type_used_for_response_prompt == "FAQs": 
-                 assistant_reasoning_steps_for_ui += f"Now checking SOPs...\n"
-            source_type_used_for_response_prompt = "SOPs"
-            assistant_reasoning_steps_for_ui += f"Attempting to retrieve from {source_type_used_for_response_prompt}...\n"
-            response_placeholder.markdown(thinking_message_ui + "\n" + assistant_reasoning_steps_for_ui)
-            if sop_retriever:
-                try:
-                    logger.debug(f"Querying SOP retriever with: '{simplified_query}'")
-                    relevant_docs = sop_retriever.get_relevant_documents(simplified_query)
-                    logger.info(f"SOP Retriever found {len(relevant_docs)} docs for '{simplified_query}'.")
-                    if relevant_docs:
-                        retrieved_context_str = "\n\n---\n\n".join([doc.page_content for doc in relevant_docs])
-                        docs_found = True
-                        assistant_reasoning_steps_for_ui += f"Found relevant info in {source_type_used_for_response_prompt}.\n"
-                    else:
-                        assistant_reasoning_steps_for_ui += f"No specific match found in {source_type_used_for_response_prompt}.\n"
-                except Exception as e:
-                    st.warning(f"Error retrieving from SOPs: {e}") # UI warning
-                    logger.warning(f"Error retrieving from SOPs: {e}", exc_info=True)
-                    assistant_reasoning_steps_for_ui += f"Error accessing {source_type_used_for_response_prompt}: {e}\n"
-            else:
-                assistant_reasoning_steps_for_ui += "SOP retriever not available.\n"
-                logger.warning("SOP retriever was None during search attempt.")
-        
-        response_placeholder.markdown(thinking_message_ui + "\n" + assistant_reasoning_steps_for_ui)
-
-        # Attempt 3: Web Search (if chosen, or if internal KBs failed)
-        if not docs_found or best_source == "Web_Search":
-            if docs_found and best_source == "Web_Search": 
-                 assistant_reason_steps_for_ui += f"Initial plan was web search. Performing web search...\n"
-            elif not docs_found and source_type_used_for_response_prompt: 
-                 assistant_reasoning_steps_for_ui += f"No specific match in {source_type_used_for_response_prompt}, now searching the web...\n"
-            elif not docs_found and not source_type_used_for_response_prompt : 
-                 assistant_reasoning_steps_for_ui += f"No internal documents found or applicable, searching the web...\n"
+        # Attempt 2: Web Search (if chosen, or if internal KBs failed)
+        # Logic for web search remains largely the same, but the conditions to trigger it are simplified.
+        if best_source == "Web_Search" or (best_source == "Internal_Docs" and not docs_found):
+            if best_source == "Web_Search" and docs_found: # This case should ideally not happen if logic is correct
+                 assistant_reasoning_steps_for_ui += f"Initial plan was web search, but found internal docs. Performing web search anyway as per plan...\n"
+            elif not docs_found and source_type_used_for_response_prompt == "Internal Documents":
+                 assistant_reasoning_steps_for_ui += f"No specific match in Internal Documents, now searching the web...\n"
+            elif best_source == "Web_Search" and not docs_found : # Explicitly chosen web search and nothing found yet
+                 assistant_reasoning_steps_for_ui += f"Searching the web as per initial plan...\n"
             
-            source_type_used_for_response_prompt = "Web Search"
+            source_type_used_for_response_prompt = "Web Search" # Set this regardless of previous state if we reach here
             assistant_reasoning_steps_for_ui += f"🌐 Searching online for '{simplified_query}'...\n"
             response_placeholder.markdown(thinking_message_ui + "\n" + assistant_reasoning_steps_for_ui)
             time.sleep(0.1) 
