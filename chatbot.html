@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatbot</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; background-color: #f4f4f4; }
+        #chat-container { width: 100%; max-width: 600px; background-color: #fff; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); display: flex; flex-direction: column; height: 80vh; }
+        #chat-log { flex-grow: 1; padding: 20px; overflow-y: auto; border-bottom: 1px solid #eee; }
+        .message { margin-bottom: 15px; padding: 10px; border-radius: 5px; line-height: 1.4; }
+        .user-message { background-color: #007bff; color: white; align-self: flex-end; margin-left: auto; }
+        .bot-message { background-color: #e9e9eb; color: #333; align-self: flex-start; margin-right: auto; }
+        #chat-input-area { display: flex; padding: 10px; border-top: 1px solid #eee;}
+        #chat-input { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px; margin-right: 10px; }
+        #send-btn { padding: 10px 15px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        #send-btn:hover { background-color: #0056b3; }
+    </style>
+</head>
+<body>
+    <div id="chat-container">
+        <div id="chat-log">
+            <!-- Chat messages will appear here -->
+        </div>
+        <div id="chat-input-area">
+            <input type="text" id="chat-input" placeholder="Type your message...">
+            <button id="send-btn">Send</button>
+        </div>
+    </div>
+
+<script>
+  const chatLog = document.getElementById('chat-log');
+  const chatInput = document.getElementById('chat-input');
+  const sendBtn = document.getElementById('send-btn');
+
+  function addUserMessage(message) {
+    const messageDiv = document.createElement('div');
+    messageDiv.classList.add('message', 'user-message');
+    messageDiv.textContent = message;
+    chatLog.appendChild(messageDiv);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  function addBotMessage(message) {
+    const messageDiv = document.createElement('div');
+    messageDiv.classList.add('message', 'bot-message');
+    messageDiv.textContent = message;
+    chatLog.appendChild(messageDiv);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  // Dummy bot response function
+  function getBotResponse(userText) {
+    const lowerUserText = userText.toLowerCase();
+    if (lowerUserText.includes('hello') || lowerUserText.includes('hi')) {
+      return 'Hello there! How can I help you today?';
+    } else if (lowerUserText.includes('how are you')) {
+      return "I'm just a bot, but I'm doing great! Thanks for asking.";
+    } else if (lowerUserText.includes('bye')) {
+      return 'Goodbye! Have a great day!';
+    } else {
+      return "I'm not sure how to respond to that. Can you try asking something else?";
+    }
+  }
+
+  // Send message handler
+  function sendMessage() {
+    const userText = chatInput.value.trim();
+    if (!userText) return;
+    addUserMessage(userText);
+    chatInput.value = '';
+    // Simulate bot response with delay
+    setTimeout(() => {
+      const botReply = getBotResponse(userText);
+      addBotMessage(botReply);
+    }, 600);
+  }
+  // Send on button click or enter press
+  sendBtn.addEventListener('click', sendMessage);
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  // Initial bot message
+  addBotMessage("Hi! I'm a simple chatbot. Try saying hello!");
+</script>
+</body>
+</html>
