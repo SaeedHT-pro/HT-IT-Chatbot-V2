@@ -14,3 +14,6 @@ duckduckgo-search
 python-dotenv
 requests
 beautifulsoup4
+fastapi
+uvicorn
+jinja2
